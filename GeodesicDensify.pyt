@@ -111,6 +111,94 @@ class GeodesicDensification_arcpy(object):
         parameter.  This method is called after internal validation."""
         return
 
+    def densify_points(in_layer, out_layer, spacing, dens_field):
+        counter = 0
+        current_point = arcpy.Point()
+        in_field_names = ['SHAPE@' if f.type == 'Geometry' else f.name for f in arcpy.ListFields(in_layer)]
+        geom_field_index = in_field_names.index('SHAPE@')
+        dens_field_index = in_field_names.index(dens_field)
+        current_dens_type = None
+        # cursor to write output layer
+        cur = arcpy.da.InsertCursor(out_layer, "*")
+        # loop through the features densify
+        with arcpy.da.SearchCursor(in_layer, in_field_names) as cursor:
+            for row in cursor:
+
+                # get the Densification type
+                if row[dens_field_index] == geodesic_field_value:
+                    dens_type = "GEODESIC"
+                elif row[dens_field_index] == loxodrome_field_value:
+                    dens_type = "LOXODROME"
+                else:
+                    dens_type = None
+
+                # this is to write the first point
+                if counter == 0:
+                    # get the point geometry
+                    pt_geom = row[geom_field_index]
+                    first_point = pt_geom.getPart()
+                    # save point geometry for the next point
+                    current_point.X = first_point.X
+                    current_point.Y = first_point.Y
+                    # save the densification type for the next point
+                    current_dens_type = dens_type
+                    # save the row for later
+                    row_list = list(row)
+                    row_list.append('Original')
+                    row = tuple(row_list)
+                    cur.insertRow(row)
+
+                # This is for subsequent points
+                elif counter > 0:
+                    start_pt = current_point
+                    start_ptgeom = arcpy.PointGeometry(start_pt, in_srs)
+                    next_pt_geom = row[geom_field_index]
+                    next_pt = next_pt_geom.getPart()
+                    next_ptgeom = arcpy.PointGeometry(next_pt, in_srs)
+                    if current_dens_type is not None:  # densify if loxodrome or geodesic
+                        angle, distance = start_ptgeom.angleAndDistanceTo(next_ptgeom, current_dens_type)
+                        # determine how many densified segments there will be
+                        segment_count = int(math.ceil(distance / float(spacing)))
+                        # adjust the spacing distance
+                        seglen = distance / segment_count
+                        # find every waypoint along segment
+                        for i in range(1, segment_count):
+                            waypoint = start_ptgeom.pointFromAngleAndDistance(angle, seglen * i, current_dens_type)
+                            point = arcpy.Point(waypoint.extent.XMax, waypoint.extent.YMax)
+                            current_point.X = point.X
+                            current_point.Y = point.Y
+                            # write to output layer
+                            row_list = list(row)
+                            row_list.append("Densified")
+                            row_list[geom_field_index] = (point.X, point.Y)
+                            out_row = tuple(row_list)
+                            cur.insertRow(out_row)
+                        # save point geometry for the next point
+                        current_point.X = next_pt.X
+                        current_point.Y = next_pt.Y
+                        # save the densification type for the next point
+                        current_dens_type = dens_type
+                    else:  # don't densify if not loxodrome or geodesic, just copy the point
+                        # write to output layer
+                        row_list = list(row)
+                        row_list.append("not densified")
+                        row_list[geom_field_index] = next_pt_geom
+                        out_row = tuple(row_list)
+                        cur.insertRow(out_row)
+                        # save point geometry for the next point
+                        current_point.X = next_pt.X
+                        current_point.Y = next_pt.Y
+                        # save the densification type for the next point
+                        current_dens_type = dens_type
+                    # write the last point 
+                    row_list = list(row)
+                    row_list.append('Original')
+                    row = tuple(row_list)
+                    cur.insertRow(row)
+                counter += 1
+        if cur:
+            del cur
+
     def execute(self, parameters, messages):
         """The source code of the tool."""
         import math
@@ -128,94 +216,6 @@ class GeodesicDensification_arcpy(object):
         dens_field = parameters[2].valueAsText
         geodesic_field_value = parameters[3].valueAsText
         loxodrome_field_value = parameters[4].valueAsText
-        
-        def densify_points(in_layer, out_layer, spacing, dens_field):
-            counter = 0
-            current_point = arcpy.Point()
-            in_field_names = ['SHAPE@' if f.type == 'Geometry' else f.name for f in arcpy.ListFields(in_layer)]
-            geom_field_index = in_field_names.index('SHAPE@')
-            dens_field_index = in_field_names.index(dens_field)
-            current_dens_type = None
-            # cursor to write output layer
-            cur = arcpy.da.InsertCursor(out_layer, "*")
-            # loop through the features densify
-            with arcpy.da.SearchCursor(in_layer, in_field_names) as cursor:
-                for row in cursor:
-
-                    # get the Densification type
-                    if row[dens_field_index] == geodesic_field_value:
-                        dens_type = "GEODESIC"
-                    elif row[dens_field_index] == loxodrome_field_value:
-                        dens_type = "LOXODROME"
-                    else:
-                        dens_type = None
-
-                    # this is to write the first point
-                    if counter == 0:
-                        # get the point geometry
-                        pt_geom = row[geom_field_index]
-                        first_point = pt_geom.getPart()
-                        # save point geometry for the next point
-                        current_point.X = first_point.X
-                        current_point.Y = first_point.Y
-                        # save the densification type for the next point
-                        current_dens_type = dens_type
-                        # save the row for later
-                        row_list = list(row)
-                        row_list.append('Original')
-                        row = tuple(row_list)
-                        cur.insertRow(row)
-
-                    # This is for subsequent points
-                    elif counter > 0:
-                        start_pt = current_point
-                        start_ptgeom = arcpy.PointGeometry(start_pt, in_srs)
-                        next_pt_geom = row[geom_field_index]
-                        next_pt = next_pt_geom.getPart()
-                        next_ptgeom = arcpy.PointGeometry(next_pt, in_srs)
-                        if current_dens_type is not None:  # densify if loxodrome or geodesic
-                            angle, distance = start_ptgeom.angleAndDistanceTo(next_ptgeom, current_dens_type)
-                            # determine how many densified segments there will be
-                            segment_count = int(math.ceil(distance / float(spacing)))
-                            # adjust the spacing distance
-                            seglen = distance / segment_count
-                            # find every waypoint along segment
-                            for i in range(1, segment_count):
-                                waypoint = start_ptgeom.pointFromAngleAndDistance(angle, seglen * i, current_dens_type)
-                                point = arcpy.Point(waypoint.extent.XMax, waypoint.extent.YMax)
-                                current_point.X = point.X
-                                current_point.Y = point.Y
-                                # write to output layer
-                                row_list = list(row)
-                                row_list.append("Densified")
-                                row_list[geom_field_index] = (point.X, point.Y)
-                                out_row = tuple(row_list)
-                                cur.insertRow(out_row)
-                            # save point geometry for the next point
-                            current_point.X = next_pt.X
-                            current_point.Y = next_pt.Y
-                            # save the densification type for the next point
-                            current_dens_type = dens_type
-                        else:  # don't densify if not loxodrome or geodesic, just copy the point
-                            # write to output layer
-                            row_list = list(row)
-                            row_list.append("not densified")
-                            row_list[geom_field_index] = next_pt_geom
-                            out_row = tuple(row_list)
-                            cur.insertRow(out_row)
-                            # save point geometry for the next point
-                            current_point.X = next_pt.X
-                            current_point.Y = next_pt.Y
-                            # save the densification type for the next point
-                            current_dens_type = dens_type
-                        # write the last point 
-                        row_list = list(row)
-                        row_list.append('Original')
-                        row = tuple(row_list)
-                        cur.insertRow(row)
-                    counter += 1
-            if cur:
-                del cur
 
         # get input geometry type
         desc = arcpy.Describe(in_layer)
